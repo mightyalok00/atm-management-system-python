@@ -3,12 +3,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from classes.ATMConfig import ATM
+from classes.ATMConfig import ATM, DataStoreError
 from classes.UserConfig import User
 
 
 class ATMFullChecklistTests(unittest.TestCase):
-    """Covers the project guide's full testing checklist."""
+    """Covers the project guide plus important exception/failure paths."""
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -57,26 +57,19 @@ class ATMFullChecklistTests(unittest.TestCase):
     @patch(
         "builtins.input",
         side_effect=[
-            "First User",
-            "9876543210",
-            "first@example.com",
-            "Strong@123",
-            "1234",
+            "First User", "9876543210", "first@example.com",
+            "Strong@123", "1234",
         ],
     )
     def test_register_first_account_uses_starting_number(self, _mock_input):
         self.atm.register()
-        accounts = self.atm.load_data()
-        self.assertEqual(accounts[0]["account_number"], 100000000001)
+        self.assertEqual(self.atm.load_data()[0]["account_number"], 100000000001)
 
     @patch(
         "builtins.input",
         side_effect=[
-            "Second User",
-            "9876543211",
-            "second@example.com",
-            "Strong@456",
-            "5678",
+            "Second User", "9876543211", "second@example.com",
+            "Strong@456", "5678",
         ],
     )
     def test_register_second_account_increments_number(self, _mock_input):
@@ -229,6 +222,56 @@ class ATMFullChecklistTests(unittest.TestCase):
         self.assertTrue(self.atm.is_valid_amount(100.0))
         self.assertFalse(self.atm.is_valid_amount(0))
         self.assertFalse(self.atm.is_valid_amount(-1))
+
+    # Exception-handling and recovery tests
+
+    def test_corrupted_accounts_json_is_not_treated_as_empty(self):
+        self.accounts_file.write_text("{broken json", encoding="utf-8")
+        with self.assertRaises(DataStoreError):
+            self.atm.load_data()
+
+    def test_wrong_json_shape_is_rejected(self):
+        self.accounts_file.write_text('{"account": 1}', encoding="utf-8")
+        with self.assertRaises(DataStoreError):
+            self.atm.load_data()
+
+    @patch("builtins.input", return_value="200")
+    def test_deposit_rolls_back_if_transaction_save_fails(self, _mock_input):
+        self.seed_user(balance=1000.0)
+        with patch.object(self.atm, "save_transactions", return_value=False):
+            self.atm.deposit()
+        self.assertEqual(self.atm.current_user.balance, 1000.0)
+        self.assertEqual(self.atm.load_data()[0]["balance"], 1000.0)
+
+    @patch("builtins.input", return_value="200")
+    def test_withdraw_rolls_back_if_transaction_save_fails(self, _mock_input):
+        self.seed_user(balance=1000.0)
+        with patch.object(self.atm, "save_transactions", return_value=False):
+            self.atm.withdraw()
+        self.assertEqual(self.atm.current_user.balance, 1000.0)
+        self.assertEqual(self.atm.load_data()[0]["balance"], 1000.0)
+
+    def test_update_user_data_synchronizes_all_editable_user_fields(self):
+        self.seed_user()
+        self.atm.current_user.name = "Updated User"
+        self.atm.current_user.phone = "9999999999"
+        self.atm.current_user.email = "updated@example.com"
+        self.atm.current_user.pin = "5678"
+        self.atm.current_user.balance = 1500.0
+        self.assertTrue(self.atm.update_user_data())
+
+        saved = self.atm.load_data()[0]
+        self.assertEqual(saved["name"], "Updated User")
+        self.assertEqual(saved["phone"], "9999999999")
+        self.assertEqual(saved["email"], "updated@example.com")
+        self.assertEqual(saved["pin"], "5678")
+        self.assertEqual(saved["balance"], 1500.0)
+
+    def test_operations_without_login_do_not_crash(self):
+        self.atm.current_user = None
+        with patch("builtins.print") as mock_print:
+            self.atm.check_balance()
+        mock_print.assert_called_with("Please login first.")
 
 
 if __name__ == "__main__":
