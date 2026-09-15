@@ -1,12 +1,12 @@
 # ATM Management System in Python
 
-A console-based ATM Management System built with Python to demonstrate object-oriented programming, user-defined modules, JSON file handling, input validation, exception handling, loops, and persistent data storage.
+A console-based ATM Management System built with Python to demonstrate object-oriented programming, user-defined modules, JSON file handling, input validation, exception handling, loops, persistent storage, and automated testing.
 
 This project is designed as a practical portfolio project for learning how multiple Python concepts work together in a real-world style application.
 
 ## Project Objective
 
-The objective is to build a menu-driven ATM application where users can register, log in, manage their balance, change their PIN, and review transaction history while keeping account data saved permanently in JSON files.
+Build a menu-driven ATM application where users can register, log in, manage their balance, change their PIN, and review transaction history while keeping account data permanently stored in JSON files.
 
 ## Features
 
@@ -20,10 +20,12 @@ The objective is to build a menu-driven ATM application where users can register
 - Transaction history
 - JSON-based persistent account storage
 - Separate `User` and `ATM` classes
-- Exception handling for invalid input and file errors
-- `while` and `for` loops for menu flow and account processing
+- Robust exception handling for input, JSON, and file failures
+- Balance rollback if transaction-history persistence fails
+- Malformed-record detection with clear warnings
 - Portable file paths using `pathlib`
 - Windows launcher with bytecode disabled
+- Automated unit tests using `unittest`
 
 ## Python Concepts Demonstrated
 
@@ -36,11 +38,13 @@ The objective is to build a menu-driven ATM application where users can register
 - Lists and dictionaries
 - JSON file handling
 - Exception handling
+- Custom exceptions
 - Input validation
 - Static methods
 - Time/date handling
 - Persistent storage
 - Unit testing with Python `unittest`
+- Mocking with `unittest.mock`
 
 ## Project Structure
 
@@ -49,6 +53,7 @@ atm-management-system-python/
 ├── main.py
 ├── run_atm.bat
 ├── README.md
+├── GUIDE_ALIGNMENT.md
 ├── requirements.txt
 ├── .gitignore
 ├── classes/
@@ -88,6 +93,8 @@ flowchart TD
     K --> Q[Append Transaction]
     N --> Q
     Q --> R[Save transactions.json]
+    R -->|Save failure| T[Rollback Balance]
+    T --> P
     J -->|Logout| D
     D -->|3. Exit| S[End Application]
 ```
@@ -115,8 +122,6 @@ flowchart TD
 
 ## Validation Rules
 
-The application validates user input before saving or processing it.
-
 - Name must contain valid alphabetic characters
 - Phone number must contain 10-15 digits
 - Email must match a valid email format
@@ -125,6 +130,25 @@ The application validates user input before saving or processing it.
 - Deposit and withdrawal amounts must be positive finite numbers
 - Duplicate phone numbers and email addresses are rejected
 - Withdrawal is blocked when the account balance is insufficient
+
+## Exception Handling & Recovery
+
+The project distinguishes expected data errors from normal empty data and avoids silently hiding corrupted storage.
+
+- Missing JSON files are treated as first-run empty storage
+- Corrupted JSON raises a clear `DataStoreError` instead of being treated as an empty account list
+- JSON files with the wrong top-level structure are rejected
+- File read errors are reported clearly
+- File write errors return a failure result and display a useful message
+- JSON writes use a temporary file before replacement to reduce the risk of partial/corrupted writes
+- Malformed account and transaction records are skipped with visible warnings
+- Incomplete or invalid account records cannot be used for login
+- Deposit and withdrawal changes are rolled back when transaction-history saving fails
+- A critical warning is displayed if a rollback itself cannot be persisted
+- ATM operations guard against being called without a logged-in user
+- `update_user_data()` synchronizes the current user's editable fields back to JSON
+
+These checks are intentionally focused on expected runtime failures rather than hiding programming errors with broad `except Exception` blocks.
 
 ## Data Storage
 
@@ -145,8 +169,6 @@ The project uses relative paths based on the project location, so it can be move
 ## Run the Project
 
 ### Windows
-
-Clone or download the repository, open the project folder, then run:
 
 ```powershell
 python -B main.py
@@ -184,17 +206,26 @@ The tests use temporary JSON files so the real account and transaction data in t
 
 ## Test Coverage
 
-The unit tests cover:
+The test suite covers the complete project checklist plus failure/recovery scenarios, including:
 
-- Name, phone, email, password, PIN, and amount validation
-- First account number generation
-- Incrementing account numbers
-- Deposit operation
-- Withdrawal operation
-- Insufficient balance handling
-- PIN change with a correct current PIN
-- PIN rejection when the current PIN is incorrect
-- JSON persistence during account updates
+- Running with no accounts
+- First and second account-number generation
+- Restart persistence
+- Correct and incorrect login credentials
+- Balance checking
+- Valid deposit and withdrawal
+- Zero/negative deposit and withdrawal input
+- Insufficient balance
+- Correct, incorrect, invalid, and unchanged PIN scenarios
+- Balance and PIN persistence after restart
+- Deposit and withdrawal transaction records
+- Input-validation helpers
+- Corrupted JSON detection
+- Invalid JSON structure detection
+- Deposit rollback when transaction saving fails
+- Withdrawal rollback when transaction saving fails
+- Synchronization of editable user fields
+- Safe behavior when an operation is called without login
 
 ## Example Menus
 
@@ -239,6 +270,7 @@ Enter choice:
 - `time`
 - `math`
 - `unittest`
+- `unittest.mock`
 
 No third-party packages are required.
 
@@ -252,8 +284,9 @@ This project demonstrates how to:
 - Validate user input safely
 - Read and write persistent JSON data
 - Synchronize in-memory objects with stored records
-- Handle expected runtime errors
-- Write isolated unit tests for application logic
+- Handle expected runtime errors clearly
+- Recover safely from transaction persistence failures
+- Write isolated unit tests for application logic and failure paths
 
 ## Author
 
