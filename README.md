@@ -63,21 +63,47 @@ atm-management-system-python/
     └── test_atm.py
 ```
 
-## Application Flow
+## Architecture / Project Flow
+
+```mermaid
+flowchart TD
+    A[Start Application] --> B[main.py]
+    B --> C[Create ATM Object]
+    C --> D{Main Menu}
+    D -->|1. Register| E[Validate User Details]
+    E --> F[Generate Account Number]
+    F --> G[Save Account to accounts.json]
+    D -->|2. Login| H[Validate Account Number + Password]
+    H -->|Success| I[Create User Object]
+    H -->|Failed| D
+    I --> J{ATM Menu}
+    J -->|Withdraw| K[Validate Amount + Balance]
+    J -->|Check Balance| L[Display Current Balance]
+    J -->|Change PIN| M[Validate Old/New PIN]
+    J -->|Deposit| N[Validate Amount]
+    J -->|Transaction History| O[Read transactions.json]
+    K --> P[Update accounts.json]
+    M --> P
+    N --> P
+    K --> Q[Append Transaction]
+    N --> Q
+    Q --> R[Save transactions.json]
+    J -->|Logout| D
+    D -->|3. Exit| S[End Application]
+```
+
+### CLI Flow
 
 ```text
-Start Application
-      |
-      v
 === ATM MANAGEMENT SYSTEM ===
 1. Register
 2. Login
 3. Exit
-      |
-      v
-Successful Login
-      |
-      v
+        |
+        v
+   Successful Login
+        |
+        v
 === ATM MENU ===
 1. Withdraw
 2. Check Balance
@@ -197,7 +223,11 @@ Enter choice:
 
 ## Security Note
 
-This is an educational project. Passwords and PINs are stored in JSON for learning purposes. A production banking system must never store credentials in plaintext and would use secure password hashing, encryption, access controls, database security, audit logging, and additional authentication measures.
+> **Educational use only:** this project intentionally stores passwords and PINs in plaintext JSON files so beginners can clearly see how file handling and persistent storage work.
+>
+> **Do not use this approach in a real banking, financial, or production application.** Real systems should use password hashing (for example, Argon2 or bcrypt), encrypted storage where appropriate, strict access controls, protected secrets, audit logging, rate limiting, secure session handling, database security, and multi-factor authentication.
+>
+> Never commit real credentials, PINs, API keys, or personal banking data to this repository.
 
 ## Technologies Used
 
