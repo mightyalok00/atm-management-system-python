@@ -7,6 +7,10 @@ from pathlib import Path
 from classes.UserConfig import User
 
 
+class DataStoreError(RuntimeError):
+    """Raised when persistent JSON data cannot be read safely."""
+
+
 class ATM:
     """Handles ATM operations and JSON file storage."""
 
@@ -21,43 +25,69 @@ class ATM:
         self._ensure_files()
 
     def _ensure_files(self):
-        self.accounts_file.parent.mkdir(parents=True, exist_ok=True)
-
-        for file_path in (self.accounts_file, self.transactions_file):
-            if not file_path.exists():
-                file_path.write_text("[]\n", encoding="utf-8")
-
-    def load_data(self):
+        """Create the data folder and JSON files when they do not exist."""
         try:
-            with self.accounts_file.open("r", encoding="utf-8") as file:
+            self.accounts_file.parent.mkdir(parents=True, exist_ok=True)
+            for file_path in (self.accounts_file, self.transactions_file):
+                if not file_path.exists():
+                    file_path.write_text("[]\n", encoding="utf-8")
+        except OSError as error:
+            raise DataStoreError(f"Could not initialize data files: {error}") from error
+
+    @staticmethod
+    def _load_json_list(file_path, label):
+        """Load a JSON list and distinguish missing files from damaged data."""
+        try:
+            with file_path.open("r", encoding="utf-8") as file:
                 data = json.load(file)
-            return data if isinstance(data, list) else []
         except FileNotFoundError:
             return []
-        except json.JSONDecodeError:
-            print("accounts.json contains invalid JSON.")
-            return []
+        except json.JSONDecodeError as error:
+            raise DataStoreError(
+                f"{label} contains invalid JSON (line {error.lineno}, column {error.colno})."
+            ) from error
         except OSError as error:
-            print(f"Could not read account data: {error}")
-            return []
+            raise DataStoreError(f"Could not read {label}: {error}") from error
+
+        if not isinstance(data, list):
+            raise DataStoreError(f"{label} must contain a JSON list.")
+
+        return data
+
+    @staticmethod
+    def _save_json_list(file_path, data, label):
+        """Save JSON safely and return False when writing fails."""
+        temp_file = file_path.with_suffix(file_path.suffix + ".tmp")
+
+        try:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            with temp_file.open("w", encoding="utf-8") as file:
+                json.dump(data, file, indent=4)
+            temp_file.replace(file_path)
+            return True
+        except (OSError, TypeError, ValueError) as error:
+            print(f"Could not save {label}: {error}")
+            try:
+                if temp_file.exists():
+                    temp_file.unlink()
+            except OSError:
+                pass
+            return False
+
+    def load_data(self):
+        return self._load_json_list(self.accounts_file, "accounts.json")
 
     def save_data(self, accounts):
-        try:
-            with self.accounts_file.open("w", encoding="utf-8") as file:
-                json.dump(accounts, file, indent=4)
-            return True
-        except OSError as error:
-            print(f"Could not save account data: {error}")
-            return False
+        return self._save_json_list(self.accounts_file, accounts, "account data")
 
     def generate_account_number(self):
         numbers = []
 
-        for account in self.load_data():
+        for index, account in enumerate(self.load_data(), start=1):
             try:
                 numbers.append(int(account["account_number"]))
             except (KeyError, TypeError, ValueError):
-                continue
+                print(f"Warning: skipped malformed account record #{index}.")
 
         return self.STARTING_ACCOUNT_NUMBER if not numbers else max(numbers) + 1
 
@@ -121,6 +151,12 @@ class ATM:
     def register(self):
         print("\n=== USER REGISTRATION ===")
 
+        try:
+            accounts = self.load_data()
+        except DataStoreError as error:
+            print(f"Registration unavailable: {error}")
+            return
+
         while True:
             name = input("Enter full name: ").strip()
             if self.is_valid_name(name):
@@ -129,47 +165,52 @@ class ATM:
 
         while True:
             phone = input("Enter phone number: ").strip()
-
             if not self.is_valid_phone(phone):
                 print("Invalid phone number.")
                 continue
-
-            if any(account.get("phone") == phone for account in self.load_data()):
+            if any(account.get("phone") == phone for account in accounts if isinstance(account, dict)):
                 print("Phone number already registered.")
                 continue
-
             break
 
         while True:
             email = input("Enter email address: ").strip().lower()
-
             if not self.is_valid_email(email):
                 print("Invalid email address.")
                 continue
-
-            if any(str(account.get("email", "")).lower() == email for account in self.load_data()):
+            if any(
+                str(account.get("email", "")).lower() == email
+                for account in accounts
+                if isinstance(account, dict)
+            ):
                 print("Email already registered.")
                 continue
-
             break
 
         while True:
             password = input("Create password: ").strip()
-
             if self.is_valid_password(password):
                 break
-
             print("Use uppercase, lowercase, number, special character and at least 8 characters.")
 
         while True:
             pin = input("Create 4-digit PIN: ").strip()
-
             if self.is_valid_pin(pin):
                 break
-
             print("PIN must contain exactly 4 digits.")
 
-        account_number = self.generate_account_number()
+        valid_numbers = []
+        for index, account in enumerate(accounts, start=1):
+            try:
+                valid_numbers.append(int(account["account_number"]))
+            except (KeyError, TypeError, ValueError):
+                print(f"Warning: skipped malformed account record #{index}.")
+
+        account_number = (
+            self.STARTING_ACCOUNT_NUMBER
+            if not valid_numbers
+            else max(valid_numbers) + 1
+        )
 
         new_account = {
             "account_number": account_number,
@@ -182,7 +223,6 @@ class ATM:
             "created_at": self.get_current_datetime(),
         }
 
-        accounts = self.load_data()
         accounts.append(new_account)
 
         if self.save_data(accounts):
@@ -193,7 +233,12 @@ class ATM:
 
     def login(self):
         print("\n=== LOGIN ===")
-        accounts = self.load_data()
+
+        try:
+            accounts = self.load_data()
+        except DataStoreError as error:
+            print(f"Login unavailable: {error}")
+            return
 
         if not accounts:
             print("No accounts found. Register first.")
@@ -208,23 +253,40 @@ class ATM:
 
         account_number = int(raw_account)
 
-        for account in accounts:
+        for index, account in enumerate(accounts, start=1):
+            if not isinstance(account, dict):
+                print(f"Warning: skipped malformed account record #{index}.")
+                continue
+
             try:
                 saved_number = int(account.get("account_number"))
             except (TypeError, ValueError):
+                print(f"Warning: skipped malformed account record #{index}.")
                 continue
 
             if saved_number == account_number and account.get("password") == password:
-                self.current_user = User(
-                    account["account_number"],
-                    account["name"],
-                    account["phone"],
-                    account["email"],
-                    account["pin"],
-                    account["password"],
-                    account["balance"],
-                    account["created_at"],
+                required = (
+                    "account_number", "name", "phone", "email",
+                    "pin", "password", "balance", "created_at"
                 )
+                if any(key not in account for key in required):
+                    print("This account record is incomplete and cannot be used.")
+                    return
+
+                try:
+                    self.current_user = User(
+                        account["account_number"],
+                        account["name"],
+                        account["phone"],
+                        account["email"],
+                        account["pin"],
+                        account["password"],
+                        account["balance"],
+                        account["created_at"],
+                    )
+                except (TypeError, ValueError) as error:
+                    print(f"This account record contains invalid data: {error}")
+                    return
 
                 print(f"Login successful. Welcome, {self.current_user.name}!")
                 self.atm_menu()
@@ -263,7 +325,6 @@ class ATM:
     def _read_amount(self, prompt):
         while True:
             raw = input(prompt).strip()
-
             try:
                 amount = float(raw)
             except ValueError:
@@ -276,28 +337,54 @@ class ATM:
 
             return round(amount, 2)
 
+    def _save_balance_transaction(self, transaction_type, amount, new_balance):
+        """Save balance and transaction together, rolling back on failure."""
+        old_balance = self.current_user.balance
+        self.current_user.balance = round(new_balance, 2)
+
+        if not self.update_user_data():
+            self.current_user.balance = old_balance
+            print(f"{transaction_type} could not be saved.")
+            return False
+
+        if self.record_transaction(transaction_type, amount):
+            return True
+
+        print("Transaction history could not be saved. Rolling back balance change.")
+        self.current_user.balance = old_balance
+
+        if not self.update_user_data():
+            print("CRITICAL: balance rollback could not be saved. Check accounts.json immediately.")
+
+        return False
+
     def withdraw(self):
+        if self.current_user is None:
+            print("Please login first.")
+            return
+
         amount = self._read_amount("Enter withdrawal amount: ")
 
         if amount > self.current_user.balance:
             print("Insufficient balance.")
             return
 
-        old_balance = self.current_user.balance
-        self.current_user.balance = round(old_balance - amount, 2)
-
-        if self.update_user_data():
-            self.record_transaction("Withdraw", amount)
+        new_balance = self.current_user.balance - amount
+        if self._save_balance_transaction("Withdraw", amount, new_balance):
             print(f"Withdrawal successful: Rs. {amount:.2f}")
             print(f"Updated balance: Rs. {self.current_user.balance:.2f}")
-        else:
-            self.current_user.balance = old_balance
-            print("Withdrawal could not be saved.")
 
     def check_balance(self):
+        if self.current_user is None:
+            print("Please login first.")
+            return
         print(f"Current balance: Rs. {self.current_user.balance:.2f}")
 
     def change_pin(self):
+        if self.current_user is None:
+            print("Please login first.")
+            return
+
         old_pin = input("Enter current PIN: ").strip()
 
         if old_pin != self.current_user.pin:
@@ -306,15 +393,12 @@ class ATM:
 
         while True:
             new_pin = input("Enter new 4-digit PIN: ").strip()
-
             if not self.is_valid_pin(new_pin):
                 print("PIN must contain exactly 4 digits.")
                 continue
-
             if new_pin == old_pin:
                 print("New PIN cannot be same as old PIN.")
                 continue
-
             break
 
         previous_pin = self.current_user.pin
@@ -327,59 +411,68 @@ class ATM:
             print("PIN change could not be saved.")
 
     def deposit(self):
-        amount = self._read_amount("Enter deposit amount: ")
-        old_balance = self.current_user.balance
-        self.current_user.balance = round(old_balance + amount, 2)
+        if self.current_user is None:
+            print("Please login first.")
+            return
 
-        if self.update_user_data():
-            self.record_transaction("Deposit", amount)
+        amount = self._read_amount("Enter deposit amount: ")
+        new_balance = self.current_user.balance + amount
+
+        if self._save_balance_transaction("Deposit", amount, new_balance):
             print(f"Deposit successful: Rs. {amount:.2f}")
             print(f"Updated balance: Rs. {self.current_user.balance:.2f}")
-        else:
-            self.current_user.balance = old_balance
-            print("Deposit could not be saved.")
 
     def update_user_data(self):
-        accounts = self.load_data()
+        if self.current_user is None:
+            print("No logged-in user to update.")
+            return False
 
-        for account in accounts:
+        try:
+            accounts = self.load_data()
+        except DataStoreError as error:
+            print(f"Could not update account: {error}")
+            return False
+
+        for index, account in enumerate(accounts, start=1):
+            if not isinstance(account, dict):
+                print(f"Warning: skipped malformed account record #{index}.")
+                continue
+
             try:
                 saved_number = int(account.get("account_number"))
             except (TypeError, ValueError):
+                print(f"Warning: skipped malformed account record #{index}.")
                 continue
 
             if saved_number == self.current_user.account_number:
-                account["pin"] = self.current_user.pin
-                account["balance"] = self.current_user.balance
+                account.update({
+                    "name": self.current_user.name,
+                    "phone": self.current_user.phone,
+                    "email": self.current_user.email,
+                    "pin": self.current_user.pin,
+                    "password": self.current_user.password,
+                    "balance": self.current_user.balance,
+                    "created_at": self.current_user.created_at,
+                })
                 return self.save_data(accounts)
 
+        print("Current account could not be found in accounts.json.")
         return False
 
     def load_transactions(self):
-        try:
-            with self.transactions_file.open("r", encoding="utf-8") as file:
-                data = json.load(file)
-            return data if isinstance(data, list) else []
-        except FileNotFoundError:
-            return []
-        except json.JSONDecodeError:
-            print("transactions.json contains invalid JSON.")
-            return []
-        except OSError as error:
-            print(f"Could not read transaction data: {error}")
-            return []
+        return self._load_json_list(self.transactions_file, "transactions.json")
 
     def save_transactions(self, transactions):
-        try:
-            with self.transactions_file.open("w", encoding="utf-8") as file:
-                json.dump(transactions, file, indent=4)
-            return True
-        except OSError as error:
-            print(f"Could not save transaction data: {error}")
-            return False
+        return self._save_json_list(
+            self.transactions_file, transactions, "transaction data"
+        )
 
     def record_transaction(self, transaction_type, amount):
-        transactions = self.load_transactions()
+        try:
+            transactions = self.load_transactions()
+        except DataStoreError as error:
+            print(f"Could not load transaction history: {error}")
+            return False
 
         transactions.append({
             "account_number": self.current_user.account_number,
@@ -392,12 +485,27 @@ class ATM:
         return self.save_transactions(transactions)
 
     def show_transaction_history(self):
+        if self.current_user is None:
+            print("Please login first.")
+            return
+
+        try:
+            transactions = self.load_transactions()
+        except DataStoreError as error:
+            print(f"Transaction history unavailable: {error}")
+            return
+
         user_transactions = []
 
-        for item in self.load_transactions():
+        for index, item in enumerate(transactions, start=1):
+            if not isinstance(item, dict):
+                print(f"Warning: skipped malformed transaction record #{index}.")
+                continue
+
             try:
                 account_number = int(item.get("account_number"))
             except (TypeError, ValueError):
+                print(f"Warning: skipped malformed transaction record #{index}.")
                 continue
 
             if account_number == self.current_user.account_number:
@@ -410,9 +518,15 @@ class ATM:
         print("\n=== TRANSACTION HISTORY ===")
 
         for index, item in enumerate(user_transactions, start=1):
+            try:
+                amount = float(item.get("amount", 0))
+                balance = float(item.get("balance_after_transaction", 0))
+            except (TypeError, ValueError):
+                print(f"{index}. Invalid transaction data")
+                continue
+
             print(
-                f"{index}. {item.get('date_time')} | "
-                f"{item.get('transaction_type')} | "
-                f"Rs. {float(item.get('amount', 0)):.2f} | "
-                f"Balance: Rs. {float(item.get('balance_after_transaction', 0)):.2f}"
+                f"{index}. {item.get('date_time', 'Unknown date')} | "
+                f"{item.get('transaction_type', 'Unknown')} | "
+                f"Rs. {amount:.2f} | Balance: Rs. {balance:.2f}"
             )
